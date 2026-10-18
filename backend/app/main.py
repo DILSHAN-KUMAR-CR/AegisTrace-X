@@ -4,12 +4,13 @@ import time
 import psutil
 from fastapi import FastAPI
 
+from backend.app.services.alert_engine import alert_engine
 from backend.app.services.anomaly_detector import detector
 
 app = FastAPI(
     title="AegisTrace",
     description="AI-Powered Linux System Intelligence",
-    version="1.1.0"
+    version="1.2.0"
 )
 
 START_TIME = time.time()
@@ -21,7 +22,7 @@ def home():
         "project": "AegisTrace",
         "description": "AI-Powered Linux System Intelligence",
         "status": "online",
-        "version": "1.1.0"
+        "version": "1.2.0"
     }
 
 
@@ -79,5 +80,19 @@ def processes():
 def analyze_system():
     cpu = psutil.cpu_percent(interval=0.5)
     memory = psutil.virtual_memory().percent
+
     return detector.analyze(cpu, memory)
+
+
+@app.get("/alerts")
+def get_alerts():
+    cpu = psutil.cpu_percent(interval=0.5)
+    memory = psutil.virtual_memory().percent
+    analysis = detector.analyze(cpu, memory)
+
+    return alert_engine.evaluate(
+        cpu,
+        memory,
+        analysis.get("anomaly", False)
+    )
 
