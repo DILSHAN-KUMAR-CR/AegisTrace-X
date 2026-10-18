@@ -4,7 +4,7 @@ import time
 import psutil
 from fastapi import FastAPI
 
-from app.services.anomaly_detector import detector
+from backend.app.services.anomaly_detector import detector
 
 app = FastAPI(
     title="AegisTrace",
@@ -79,6 +79,5 @@ def processes():
 def analyze_system():
     cpu = psutil.cpu_percent(interval=0.5)
     memory = psutil.virtual_memory().percent
-
     return detector.analyze(cpu, memory)
 
