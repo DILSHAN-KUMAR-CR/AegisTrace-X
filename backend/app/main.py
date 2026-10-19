@@ -2,16 +2,18 @@
 import time
 
 import psutil
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.services.alert_engine import alert_engine
+from backend.app.services.alert_storage import alert_storage
 from backend.app.services.anomaly_detector import detector
+from backend.app.services.alert_explainer import explain_alert
 
 app = FastAPI(
     title="AegisTrace",
     description="AI-Powered Linux System Intelligence",
-    version="1.2.0"
+    version="1.4.0"
 )
 
 app.add_middleware(
@@ -34,7 +36,7 @@ def home():
         "project": "AegisTrace",
         "description": "AI-Powered Linux System Intelligence",
         "status": "online",
-        "version": "1.2.0"
+        "version": "1.4.0"
     }
 
 
@@ -102,9 +104,74 @@ def get_alerts():
     memory = psutil.virtual_memory().percent
     analysis = detector.analyze(cpu, memory)
 
-    return alert_engine.evaluate(
+    current = alert_engine.evaluate(
         cpu,
         memory,
         analysis.get("anomaly", False)
     )
 
+    saved_alerts = alert_storage.save_alerts(current)
+
+    return {
+        **current,
+        "history": alert_storage.get_alerts(limit=100),
+        "newly_recorded": len(saved_alerts)
+    }
+
+
+@app.get("/alerts/history")
+def alert_history(
+    limit: int = Query(default=100, ge=1, le=500),
+    severity: str | None = None
+):
+    if severity:
+        severity = severity.upper()
+
+        if severity not in {"HIGH", "MEDIUM", "LOW"}:
+            raise HTTPException(
+                status_code=400,
+                detail="Severity must be HIGH, MEDIUM, or LOW"
+            )
+
+    history = alert_storage.get_alerts(
+        limit=limit,
+        severity=severity
+    )
+
+    return {
+        "count": len(history),
+        "alerts": history
+    }
+
+
+@app.get("/alerts/explain/{alert_type}")
+def explain_system_alert(alert_type: str):
+    alert_type = alert_type.upper()
+
+    if alert_type not in {"CPU", "MEMORY", "ANOMALY"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Alert type must be CPU, MEMORY, or ANOMALY"
+        )
+
+    cpu = psutil.cpu_percent(interval=0.5)
+    memory = psutil.virtual_memory().percent
+
+    if alert_type == "CPU":
+        value = cpu
+    elif alert_type == "MEMORY":
+        value = memory
+    else:
+        value = None
+
+    alert = {
+        "type": alert_type,
+        "severity": "HIGH",
+        "value": value,
+        "message": f"{alert_type} alert explanation requested"
+    }
+
+    return {
+        "alert_type": alert_type,
+        "explanation": explain_alert(alert)
+    }

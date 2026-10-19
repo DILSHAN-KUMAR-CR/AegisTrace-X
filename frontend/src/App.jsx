@@ -2,18 +2,20 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   Activity,
+  AlertTriangle,
   BellRing,
   CheckCircle,
+  ChevronRight,
   Cpu,
   Database,
   HardDrive,
-  Layers,
+  LayoutDashboard,
   MemoryStick,
   RefreshCw,
   Server,
+  Shield,
   ShieldAlert,
   Terminal,
-  Wifi,
   XCircle
 } from "lucide-react";
 import {
@@ -29,383 +31,521 @@ import "./App.css";
 
 const API = "http://localhost:8000";
 
-function MetricCard({ icon: Icon, label, value, detail, color, percent }) {
+const navigation = [
+  { label: "System Overview", icon: LayoutDashboard },
+  { label: "Resource Metrics", icon: Activity },
+  { label: "Processes", icon: Terminal },
+  { label: "Alerts & History", icon: BellRing },
+  { label: "Anomaly Detection", icon: ShieldAlert },
+  { label: "Event Storage", icon: Database }
+];
+
+function MetricCard({ title, value, unit = "%", icon: Icon, color, detail }) {
   return (
-    <article className="metric-card">
-      <div className="metric-top">
-        <div className={`metric-icon ${color}`}>
-          <Icon size={20} />
-        </div>
-        <span className="metric-label">{label}</span>
-        <span className="live-dot" />
+    <div className="metric-card">
+      <div className="metric-card-top">
+        <span>{title}</span>
+        <Icon size={21} color={color} />
       </div>
-      <div className="metric-value">{value}</div>
-      <div className="metric-detail">{detail}</div>
-      <div className="progress-track">
+      <div className="metric-value">
+        {value ?? "--"}<small>{value == null ? "" : unit}</small>
+      </div>
+      <div className="metric-bar">
         <div
-          className={`progress-fill ${color}`}
-          style={{ width: `${Math.min(Math.max(percent || 0, 0), 100)}%` }}
+          className="metric-bar-fill"
+          style={{
+            width: `${Math.min(100, Math.max(0, Number(value) || 0))}%`,
+            background: color
+          }}
         />
       </div>
-    </article>
+      <div className="metric-detail">{detail}</div>
+    </div>
   );
 }
 
-function formatUptime(seconds = 0) {
-  const days = Math.floor(seconds / 86400);
-  const hours = Math.floor((seconds % 86400) / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  return `${days}d ${hours}h ${minutes}m`;
+function EmptyState({ message }) {
+  return (
+    <div className="empty-state">
+      <Activity size={28} />
+      <p>{message}</p>
+    </div>
+  );
 }
 
-function App() {
-  const [metrics, setMetrics] = useState(null);
+export default function App() {
+  const [page, setPage] = useState("System Overview");
+  const [system, setSystem] = useState(null);
   const [processes, setProcesses] = useState([]);
   const [alerts, setAlerts] = useState([]);
   const [history, setHistory] = useState([]);
-  const [connected, setConnected] = useState(false);
+  const [analysis, setAnalysis] = useState(null);
+  const [chartData, setChartData] = useState([]);
+  const [severity, setSeverity] = useState("ALL");
+  const [explanation, setExplanation] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [lastUpdated, setLastUpdated] = useState(null);
   const [error, setError] = useState("");
 
-  const refresh = useCallback(async () => {
+  const loadDashboard = useCallback(async () => {
     try {
-      const responses = await Promise.all([
-        fetch(`${API}/system`),
-        fetch(`${API}/processes`),
-        fetch(`${API}/alerts`)
-      ]);
+      const [systemResponse, processResponse, alertResponse, historyResponse, analysisResponse] =
+        await Promise.all([
+          fetch(`${API}/system`),
+          fetch(`${API}/processes`),
+          fetch(`${API}/alerts`),
+          fetch(`${API}/alerts/history?limit=100`),
+          fetch(`${API}/analyze`)
+        ]);
 
-      if (responses.some((response) => !response.ok)) {
-        throw new Error("One or more API endpoints returned an error.");
+      if (
+        !systemResponse.ok ||
+        !processResponse.ok ||
+        !alertResponse.ok ||
+        !historyResponse.ok ||
+        !analysisResponse.ok
+      ) {
+        throw new Error("One or more backend endpoints returned an error.");
       }
 
-      const [system, processList, alertData] = await Promise.all(
-        responses.map((response) => response.json())
-      );
+      const [systemData, processData, alertData, historyData, analysisData] =
+        await Promise.all([
+          systemResponse.json(),
+          processResponse.json(),
+          alertResponse.json(),
+          historyResponse.json(),
+          analysisResponse.json()
+        ]);
 
-      setMetrics(system);
-      setProcesses(processList);
+      setSystem(systemData);
+      setProcesses(Array.isArray(processData) ? processData : []);
       setAlerts(alertData.alerts || []);
-      setHistory((previous) => [
-        ...previous,
-        {
-          time: new Date().toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-            second: "2-digit"
-          }),
-          cpu: system.cpu_percent,
-          memory: system.memory.used_percent
-        }
-      ].slice(-20));
-
-      setConnected(true);
-      setLastUpdated(new Date());
+      setHistory(historyData.alerts || []);
+      setAnalysis(analysisData);
       setError("");
-    } catch {
-      setConnected(false);
-      setError("Cannot connect to the API. Check that the AegisTrace backend is running.");
+
+      setChartData((previous) => [
+        ...previous.slice(-19),
+        {
+          time: new Date().toLocaleTimeString(),
+          cpu: systemData.cpu_percent,
+          memory: systemData.memory?.used_percent ?? 0,
+          disk: systemData.disk?.used_percent ?? 0
+        }
+      ]);
+    } catch (err) {
+      setError(
+        `Cannot load dashboard data. Check that the backend is running at ${API}.`
+      );
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    refresh();
-    const interval = setInterval(refresh, 5000);
-    return () => clearInterval(interval);
-  }, [refresh]);
+    loadDashboard();
+    const timer = setInterval(loadDashboard, 5000);
+    return () => clearInterval(timer);
+  }, [loadDashboard]);
 
-  const cpu = metrics?.cpu_percent ?? 0;
-  const memory = metrics?.memory?.used_percent ?? 0;
-  const disk = metrics?.disk?.used_percent ?? 0;
-  const highAlerts = alerts.filter((alert) => alert.severity === "HIGH").length;
+  const openPage = (label) => {
+    setPage(label);
+    setExplanation(null);
+  };
+
+  const explain = async (type) => {
+    try {
+      setExplanation({ loading: true });
+      const response = await fetch(`${API}/alerts/explain/${type}`);
+
+      if (!response.ok) {
+        throw new Error("Explanation request failed.");
+      }
+
+      setExplanation(await response.json());
+    } catch {
+      setExplanation({
+        error: "Unable to load the explanation. Check the backend and try again."
+      });
+    }
+  };
+
+  const filteredHistory =
+    severity === "ALL"
+      ? history
+      : history.filter((item) => item.severity === severity);
+
+  const cpu = system?.cpu_percent;
+  const memory = system?.memory?.used_percent;
+  const disk = system?.disk?.used_percent;
+
+  const formatUptime = (seconds) => {
+    if (seconds == null) return "--";
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    return `${days}d ${hours}h ${minutes}m`;
+  };
+
+  const renderExplanation = () => {
+    if (!explanation) return null;
+
+    if (explanation.loading) {
+      return <div className="panel">Loading explanation...</div>;
+    }
+
+    if (explanation.error) {
+      return <div className="panel">{explanation.error}</div>;
+    }
+
+    const data = explanation.explanation;
+
+    return (
+      <section className="panel explanation-panel">
+        <div className="panel-heading">
+          <div>
+            <h2>{data.title}</h2>
+            <p>Alert explanation and recommended actions</p>
+          </div>
+          <button
+            className="secondary-button"
+            onClick={() => setExplanation(null)}
+          >
+            Close
+          </button>
+        </div>
+        <p>{data.explanation}</p>
+        <h3>Possible causes</h3>
+        <ul>
+          {data.possible_causes?.map((cause) => (
+            <li key={cause}>{cause}</li>
+          ))}
+        </ul>
+        <h3>Recommended actions</h3>
+        <ul>
+          {data.recommended_actions?.map((action) => (
+            <li key={action}>{action}</li>
+          ))}
+        </ul>
+      </section>
+    );
+  };
+
+  const renderChart = () => (
+    <section className="panel">
+      <div className="panel-heading">
+        <div>
+          <h2>Resource Trends</h2>
+          <p>Live system usage over recent refreshes</p>
+        </div>
+        <Activity size={21} />
+      </div>
+      <div className="chart-container">
+        {chartData.length > 0 ? (
+          <ResponsiveContainer width="100%" height={280}>
+            <AreaChart data={chartData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#273447" />
+              <XAxis dataKey="time" stroke="#8593a8" />
+              <YAxis domain={[0, 100]} stroke="#8593a8" />
+              <Tooltip />
+              <Area
+                type="monotone"
+                dataKey="cpu"
+                name="CPU"
+                stroke="#55e0c0"
+                fill="#55e0c0"
+                fillOpacity={0.12}
+              />
+              <Area
+                type="monotone"
+                dataKey="memory"
+                name="Memory"
+                stroke="#83a6ff"
+                fill="#83a6ff"
+                fillOpacity={0.1}
+              />
+            </AreaChart>
+          </ResponsiveContainer>
+        ) : (
+          <EmptyState message="Waiting for resource data..." />
+        )}
+      </div>
+    </section>
+  );
+
+  const renderProcesses = () => (
+    <section className="panel">
+      <div className="panel-heading">
+        <div>
+          <h2>Running Processes</h2>
+          <p>Processes sorted by memory consumption</p>
+        </div>
+        <button className="secondary-button" onClick={loadDashboard}>
+          <RefreshCw size={15} /> Refresh
+        </button>
+      </div>
+      <div className="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th>PID</th>
+              <th>Process</th>
+              <th>Memory</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {processes.map((process, index) => (
+              <tr key={process.pid ?? index}>
+                <td>{process.pid ?? "--"}</td>
+                <td>{process.name || "Unknown"}</td>
+                <td>
+                  {Number(process.memory_percent || 0).toFixed(2)}%
+                </td>
+                <td>{process.status || "--"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {processes.length === 0 && (
+          <EmptyState message="No process information available." />
+        )}
+      </div>
+    </section>
+  );
+
+  const renderAlertList = (items) => (
+    <div className="alert-list">
+      {items.map((alert, index) => (
+        <div className="alert-item" key={alert.id ?? `${alert.type}-${index}`}>
+          <AlertTriangle size={19} />
+          <div className="alert-content">
+            <strong>{alert.type || "System alert"}</strong>
+            <p>{alert.message}</p>
+            <small>
+              {alert.timestamp
+                ? new Date(alert.timestamp).toLocaleString()
+                : "Current alert"}
+            </small>
+          </div>
+          <span className={`severity-badge ${(alert.severity || "medium").toLowerCase()}`}>
+            {alert.severity || "MEDIUM"}
+          </span>
+          <button
+            className="secondary-button"
+            onClick={() => explain(alert.type)}
+          >
+            Explain
+          </button>
+        </div>
+      ))}
+      {items.length === 0 && (
+        <EmptyState message="No alerts to display." />
+      )}
+    </div>
+  );
+
+  const renderContent = () => {
+    if (loading && !system) {
+      return <section className="panel"><p>Loading system data...</p></section>;
+    }
+
+    if (page === "System Overview") {
+      return (
+        <>
+          <section className="metrics-grid">
+            <MetricCard title="CPU UTILIZATION" value={cpu} icon={Cpu} color="#55e0c0" detail="Current CPU usage" />
+            <MetricCard title="MEMORY USAGE" value={memory} icon={MemoryStick} color="#83a6ff" detail={`${system?.memory?.used_gb ?? "--"} / ${system?.memory?.total_gb ?? "--"} GB`} />
+            <MetricCard title="DISK UTILIZATION" value={disk} icon={HardDrive} color="#bd91ff" detail={`${system?.disk?.used_gb ?? "--"} / ${system?.disk?.total_gb ?? "--"} GB`} />
+            <MetricCard title="RUNNING PROCESSES" value={system?.running_processes} unit="" icon={Terminal} color="#f4bf68" detail="Detected process IDs" />
+          </section>
+          {renderChart()}
+          <section className="panel">
+            <div className="panel-heading">
+              <div><h2>Active Alerts</h2><p>Current system warnings</p></div>
+              <button className="secondary-button" onClick={() => openPage("Alerts & History")}>View all <ChevronRight size={15} /></button>
+            </div>
+            {renderAlertList(alerts)}
+          </section>
+        </>
+      );
+    }
+
+    if (page === "Resource Metrics") {
+      return (
+        <>
+          <section className="metrics-grid">
+            <MetricCard title="CPU UTILIZATION" value={cpu} icon={Cpu} color="#55e0c0" detail="Current CPU usage" />
+            <MetricCard title="MEMORY USAGE" value={memory} icon={MemoryStick} color="#83a6ff" detail={`${system?.memory?.used_gb ?? "--"} / ${system?.memory?.total_gb ?? "--"} GB`} />
+            <MetricCard title="DISK UTILIZATION" value={disk} icon={HardDrive} color="#bd91ff" detail={`${system?.disk?.used_gb ?? "--"} / ${system?.disk?.total_gb ?? "--"} GB`} />
+          </section>
+          {renderChart()}
+          <section className="panel">
+            <h2>System Information</h2>
+            <p>Uptime: {formatUptime(system?.uptime_seconds)}</p>
+            <p>Total memory: {system?.memory?.total_gb ?? "--"} GB</p>
+            <p>Total disk: {system?.disk?.total_gb ?? "--"} GB</p>
+            <p>Running processes: {system?.running_processes ?? "--"}</p>
+          </section>
+        </>
+      );
+    }
+
+    if (page === "Processes") return renderProcesses();
+
+    if (page === "Alerts & History") {
+      return (
+        <section className="panel">
+          <div className="panel-heading">
+            <div><h2>Alerts & History</h2><p>Persisted alerts stored in SQLite</p></div>
+            <select value={severity} onChange={(event) => setSeverity(event.target.value)}>
+              <option value="ALL">All severities</option>
+              <option value="HIGH">High</option>
+              <option value="MEDIUM">Medium</option>
+              <option value="LOW">Low</option>
+            </select>
+          </div>
+          {renderAlertList(filteredHistory)}
+        </section>
+      );
+    }
+
+    if (page === "Anomaly Detection") {
+      return (
+        <>
+          <section className="panel">
+            <div className="panel-heading">
+              <div><h2>Anomaly Detection</h2><p>Isolation Forest analysis of CPU and memory metrics</p></div>
+              <ShieldAlert size={22} />
+            </div>
+            <div className="anomaly-status">
+              {analysis?.anomaly ? <XCircle size={24} /> : <CheckCircle size={24} />}
+              <div>
+                <strong>
+                  {analysis?.status === "learning"
+                    ? "Learning system baseline"
+                    : analysis?.anomaly
+                      ? "Potential anomaly detected"
+                      : "No anomaly detected"}
+                </strong>
+                <p>{analysis?.message || "Analysis is based on recent CPU and memory samples."}</p>
+              </div>
+            </div>
+            <p>Samples collected: {analysis?.samples_collected ?? 0}</p>
+            <p>CPU usage: {analysis?.cpu_percent ?? cpu ?? "--"}%</p>
+            <p>Memory usage: {analysis?.memory_percent ?? memory ?? "--"}%</p>
+            <button className="secondary-button" onClick={loadDashboard}>
+              <RefreshCw size={15} /> Run analysis
+            </button>
+          </section>
+          {renderExplanation()}
+          <section className="panel">
+            <h2>Understand the result</h2>
+            <p>The Isolation Forest model flags metric patterns that differ from its recent sample window. An anomaly is not proof of malware or a security incident.</p>
+          </section>
+        </>
+      );
+    }
+
+    if (page === "Event Storage") {
+      return (
+        <section className="panel">
+          <div className="panel-heading">
+            <div><h2>Event Storage</h2><p>Alert records saved in the local SQLite database</p></div>
+            <Database size={22} />
+          </div>
+          <div className="metrics-grid">
+            <MetricCard title="STORED ALERTS" value={history.length} unit="" icon={Database} color="#55e0c0" detail="Records returned by API" />
+            <MetricCard title="HIGH SEVERITY" value={history.filter((item) => item.severity === "HIGH").length} unit="" icon={ShieldAlert} color="#ff7887" detail="High severity records" />
+            <MetricCard title="MEDIUM SEVERITY" value={history.filter((item) => item.severity === "MEDIUM").length} unit="" icon={BellRing} color="#f4bf68" detail="Medium severity records" />
+          </div>
+          <p>Database file: ~/AegisTrace/aegistrace.db</p>
+          {renderAlertList(history)}
+        </section>
+      );
+    }
+
+    return <EmptyState message="Select a page from the sidebar." />;
+  };
 
   return (
-    <div className="app-shell">
+    <div className="app">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark"><Activity size={25} /></div>
-          <div>
-            <h1>AegisTrace</h1>
-            <span>LINUX INTELLIGENCE</span>
-          </div>
+          <div className="brand-icon"><Shield size={25} /></div>
+          <div><strong>AegisTrace</strong><span>System Intelligence</span></div>
         </div>
-
-        <div className="nav-caption">WORKSPACE</div>
-        <nav className="navigation">
-          <a className="nav-item active" href="#overview">
-            <Layers size={18} /> Overview
-          </a>
-          <a className="nav-item" href="#metrics">
-            <Activity size={18} /> System metrics
-          </a>
-          <a className="nav-item" href="#processes">
-            <Terminal size={18} /> Processes
-          </a>
-          <a className="nav-item" href="#alerts">
-            <BellRing size={18} /> Alerts
-            {alerts.length > 0 && <span className="nav-count">{alerts.length}</span>}
-          </a>
-        </nav>
-
-        <div className="sidebar-bottom">
-          <div className="security-card">
-            <ShieldAlert size={22} />
-            <strong>System protection</strong>
-            <p>Monitor resource usage and detect unusual system behavior.</p>
-            <span className="protection-status">
-              <span className="live-dot" /> Monitoring enabled
-            </span>
-          </div>
-          <div className="sidebar-version">
-            <span className="version-dot" /> AegisTrace v1.2.0
-          </div>
+        <div className="nav-section-title">MONITORING</div>
+        {navigation.slice(0, 4).map(({ label, icon: Icon }) => (
+          <button
+            key={label}
+            className={`nav-item ${page === label ? "active" : ""}`}
+            onClick={() => openPage(label)}
+          >
+            <Icon size={18} /><span>{label}</span>
+          </button>
+        ))}
+        <div className="nav-section-title">INTELLIGENCE</div>
+        {navigation.slice(4).map(({ label, icon: Icon }) => (
+          <button
+            key={label}
+            className={`nav-item ${page === label ? "active" : ""}`}
+            onClick={() => openPage(label)}
+          >
+            <Icon size={18} /><span>{label}</span>
+          </button>
+        ))}
+        <div className="sidebar-footer">
+          <span className="status-dot" />
+          Backend connection
+          <strong>{error ? "Offline" : "Connected"}</strong>
         </div>
       </aside>
 
-      <main className="main-content" id="overview">
+      <main className="main-content">
         <header className="topbar">
-          <div className="breadcrumb">Workspace <span>/</span> Overview</div>
-          <div className="topbar-right">
-            <div className={`connection-pill ${connected ? "online" : "offline"}`}>
-              {connected ? <Wifi size={15} /> : <XCircle size={15} />}
-              {connected ? "API Connected" : "API Disconnected"}
-            </div>
-            <button className="refresh-button" onClick={refresh} aria-label="Refresh metrics">
-              <RefreshCw size={16} />
-              Refresh
+          <div>
+            <span className="eyebrow">LINUX SYSTEM MONITOR / OVERVIEW</span>
+            <h1>{page}</h1>
+            <p>Real-time resource monitoring and machine-learning anomaly detection</p>
+          </div>
+          <div className="topbar-actions">
+            <span className="system-online"><WifiIcon /> SYSTEM {error ? "OFFLINE" : "ONLINE"}</span>
+            <button className="secondary-button" onClick={loadDashboard}>
+              <RefreshCw size={15} /> Refresh
             </button>
           </div>
         </header>
 
-        <section className="page-heading">
-          <div>
-            <div className="eyebrow"><span className="live-dot" /> LIVE SYSTEM OBSERVABILITY</div>
-            <h2>System Overview</h2>
-            <p>Monitor system health, resource utilization, and anomaly alerts in real time.</p>
-          </div>
-          <div className="updated-label">
-            <span>LAST UPDATED</span>
-            <strong>{lastUpdated ? lastUpdated.toLocaleTimeString() : "Waiting for data"}</strong>
-          </div>
-        </section>
-
         {error && (
           <div className="error-banner">
-            <XCircle size={18} />
-            <span>{error}</span>
-            <button onClick={refresh}>Retry</button>
+            <XCircle size={18} /> {error}
           </div>
         )}
 
-        <section className="metric-grid" id="metrics">
-          <MetricCard
-            icon={Cpu}
-            label="CPU UTILIZATION"
-            value={`${cpu.toFixed(1)}%`}
-            detail="Current processor usage"
-            color="cyan"
-            percent={cpu}
-          />
-          <MetricCard
-            icon={MemoryStick}
-            label="MEMORY USAGE"
-            value={`${memory.toFixed(1)}%`}
-            detail={`${metrics?.memory?.used_gb ?? "--"} / ${metrics?.memory?.total_gb ?? "--"} GB used`}
-            color="purple"
-            percent={memory}
-          />
-          <MetricCard
-            icon={HardDrive}
-            label="DISK UTILIZATION"
-            value={`${disk.toFixed(1)}%`}
-            detail={`${metrics?.disk?.used_gb ?? "--"} / ${metrics?.disk?.total_gb ?? "--"} GB used`}
-            color="green"
-            percent={disk}
-          />
-          <MetricCard
-            icon={Server}
-            label="RUNNING PROCESSES"
-            value={metrics?.running_processes ?? "--"}
-            detail={`System uptime: ${formatUptime(metrics?.uptime_seconds)}`}
-            color="orange"
-            percent={Math.min((metrics?.running_processes ?? 0) / 5, 100)}
-          />
+        <section className="system-banner">
+          <div className="brand-icon"><Shield size={24} /></div>
+          <div>
+            <strong>AegisTrace Monitoring Engine</strong>
+            <p>System telemetry, persistent alerts and anomaly analysis</p>
+          </div>
+          <span className="live-indicator"><span className="status-dot" /> LIVE MONITORING</span>
         </section>
 
-        <section className="charts-grid">
-          <article className="panel chart-panel">
-            <div className="panel-heading">
-              <div>
-                <h3>Resource utilization</h3>
-                <p>Live CPU and memory performance</p>
-              </div>
-              <span className="panel-tag"><span className="live-dot" /> LIVE</span>
-            </div>
-            <div className="chart-legend">
-              <span><i className="legend-dot cpu-dot" /> CPU</span>
-              <span><i className="legend-dot memory-dot" /> Memory</span>
-            </div>
-            <div className="chart-container">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={history}>
-                  <defs>
-                    <linearGradient id="cpuGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#22d3ee" stopOpacity={0.25} />
-                      <stop offset="95%" stopColor="#22d3ee" stopOpacity={0} />
-                    </linearGradient>
-                    <linearGradient id="memoryGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#a78bfa" stopOpacity={0.2} />
-                      <stop offset="95%" stopColor="#a78bfa" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid stroke="#243044" strokeDasharray="4 4" vertical={false} />
-                  <XAxis dataKey="time" tick={{ fill: "#8290a7", fontSize: 10 }} axisLine={false} tickLine={false} minTickGap={30} />
-                  <YAxis domain={[0, 100]} tick={{ fill: "#8290a7", fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(value) => `${value}%`} />
-                  <Tooltip
-                    contentStyle={{ background: "#111b2b", border: "1px solid #2a3a50", borderRadius: 10, color: "#f1f5f9" }}
-                    formatter={(value) => [`${Number(value).toFixed(1)}%`]}
-                  />
-                  <Area type="monotone" dataKey="cpu" name="CPU" stroke="#22d3ee" strokeWidth={2} fill="url(#cpuGradient)" isAnimationActive={false} />
-                  <Area type="monotone" dataKey="memory" name="Memory" stroke="#a78bfa" strokeWidth={2} fill="url(#memoryGradient)" isAnimationActive={false} />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
-            <div className="chart-footer">
-              <span><span className="live-dot" /> Refreshing every 5 seconds</span>
-              <span>{history.length} samples collected</span>
-            </div>
-          </article>
+        <div className="page-content">
+          {renderContent()}
+          {renderExplanation()}
+        </div>
 
-          <article className="panel status-panel">
-            <div className="panel-heading">
-              <div>
-                <h3>System health</h3>
-                <p>Current monitoring status</p>
-              </div>
-              <Activity size={19} className="muted-icon" />
-            </div>
-            <div className={`health-indicator ${!connected ? "health-offline" : highAlerts ? "health-warning" : "health-good"}`}>
-              {connected ? <CheckCircle size={27} /> : <XCircle size={27} />}
-              <div>
-                <strong>{!connected ? "Disconnected" : highAlerts ? "Attention required" : "System operational"}</strong>
-                <span>{!connected ? "Backend unavailable" : highAlerts ? `${highAlerts} high severity alerts` : "API responding normally"}</span>
-              </div>
-            </div>
-            <div className="health-row">
-              <span><span className="status-dot green-dot" /> Backend API</span>
-              <strong>{connected ? "Online" : "Offline"}</strong>
-            </div>
-            <div className="health-row">
-              <span><span className="status-dot green-dot" /> Metrics collection</span>
-              <strong>{connected ? "Active" : "Paused"}</strong>
-            </div>
-            <div className="health-row">
-              <span><span className={`status-dot ${alerts.length ? "orange-dot" : "green-dot"}`} /> Active alerts</span>
-              <strong>{alerts.length}</strong>
-            </div>
-            <div className="health-row">
-              <span><span className="status-dot purple-dot" /> Processes tracked</span>
-              <strong>{processes.length}</strong>
-            </div>
-            <div className="health-note">
-              <Database size={17} />
-              <span>Metrics are collected directly from the Linux host using psutil.</span>
-            </div>
-          </article>
-        </section>
-
-        <section className="bottom-grid">
-          <article className="panel process-panel" id="processes">
-            <div className="panel-heading">
-              <div>
-                <h3>Top processes</h3>
-                <p>Processes ranked by memory consumption</p>
-              </div>
-              <span className="count-badge">{processes.length} tracked</span>
-            </div>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>PROCESS</th>
-                    <th>PID</th>
-                    <th>STATUS</th>
-                    <th>MEMORY</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {processes.slice(0, 8).map((process, index) => (
-                    <tr key={`${process.pid}-${index}`}>
-                      <td>
-                        <div className="process-name">
-                          <span className="process-icon"><Terminal size={15} /></span>
-                          <span>{process.name || "Unknown"}</span>
-                        </div>
-                      </td>
-                      <td className="mono">{process.pid}</td>
-                      <td><span className={`process-status ${process.status === "running" ? "running" : ""}`}>{process.status || "unknown"}</span></td>
-                      <td>
-                        <div className="memory-cell">
-                          <span>{Number(process.memory_percent || 0).toFixed(2)}%</span>
-                          <div className="mini-track"><div style={{ width: `${Math.min(process.memory_percent || 0, 100)}%` }} /></div>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                  {!processes.length && (
-                    <tr><td colSpan="4" className="empty-cell">{loading ? "Loading processes..." : "No process data available."}</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </article>
-
-          <article className="panel alerts-panel" id="alerts">
-            <div className="panel-heading">
-              <div>
-                <h3>System alerts</h3>
-                <p>Threshold and anomaly notifications</p>
-              </div>
-              <span className="count-badge">{alerts.length} active</span>
-            </div>
-            <div className="alerts-list">
-              {alerts.length ? alerts.map((alert, index) => (
-                <div className="alert-item" key={`${alert.type}-${index}`}>
-                  <div className={`alert-icon ${alert.severity === "HIGH" ? "alert-high" : "alert-medium"}`}>
-                    <ShieldAlert size={18} />
-                  </div>
-                  <div className="alert-content">
-                    <div className="alert-title">{alert.type} alert <span className={`severity ${alert.severity?.toLowerCase()}`}>{alert.severity}</span></div>
-                    <p>{alert.message}</p>
-                    <span className="alert-time">{alert.value != null ? `Current value: ${alert.value}%` : "Anomaly detector notification"}</span>
-                  </div>
-                </div>
-              )) : (
-                <div className="no-alerts">
-                  <div className="no-alerts-icon"><CheckCircle size={24} /></div>
-                  <strong>No active alerts</strong>
-                  <p>{connected ? "No threshold alerts detected in the latest check." : "Connect to the backend to receive alerts."}</p>
-                </div>
-              )}
-            </div>
-            <div className="alert-footer">
-              <BellRing size={15} />
-              Alert thresholds: CPU 80% · Memory 85%
-            </div>
-          </article>
-        </section>
-
-        <footer className="page-footer">
-          <span>AEGISTRACE <span className="footer-separator">/</span> SYSTEM INTELLIGENCE</span>
-          <span><span className="live-dot" /> {connected ? "Live monitoring active" : "Waiting for backend"}</span>
+        <footer className="app-footer">
+          <span><Server size={14} /> AegisTrace v1.4.0</span>
+          <span>Uptime: {formatUptime(system?.uptime_seconds)}</span>
+          <span>Auto-refresh: 5 seconds</span>
         </footer>
       </main>
     </div>
   );
 }
 
-export default App;
-
+function WifiIcon() {
+  return <Activity size={15} />;
+}
